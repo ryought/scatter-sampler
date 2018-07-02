@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8"/>
+    <title>Title</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+</head>
+<body>
+
+<div class="toolbar" style="position: absolute; top: 0px; left: 0px; width: 100%; height: 50px; background: #aaa;">
+    <button onclick="">Draw</button>
+    <button onclick="">Select</button>
+    <button onclick="draw()">Resample</button>
+    <button onclick="hoge()" disabled>hoge</button>
+    <button onclick="clearAll()">New</button>
+    <button onclick="handleDownload()">
+        Download
+        <a id="download" href="#" download="data.csv" style="display: none;"> </a></button>
+    <input type="range" value="40" min="1" max="40" step="1"
+           oninput="document.getElementById('output1').value=this.value">
+    <output id="output1">40</output>
+    <input type="radio" name="choice" id="choice1"><label for="choice1">1</label>
+    <input type="radio" name="choice" id="choice2"><label for="choice2">2</label>
+
+    Distribution
+    <input type="radio" name="mode" id="unif" onchange="onChangeMode(this)"><label for="unif">Uniform</label>
+    <input type="radio" name="mode" id="norm" onchange="onChangeMode(this)"><label for="norm">Normal</label>
+</div>
+<div style="position: relative; top: 50px;">
+    <canvas id="background" style="position: absolute;"></canvas>
+    <canvas id="canvas" style="position: absolute; border: solid; opacity: 0.2;"></canvas>
+</div>
+
+<script type="text/javascript" src="script.js"></script>
+<script>
+    /*
+    ・色ぬり機能
+    データ構造
+    ・input 点の集まり クリックイベントに対応
+    ・中間 べたっとした領域 クラスターごとにある
+    ・出力 points その領域に沿ってランダムな点を生成 中間の出力を監視して随時発行
+    処理のTODO
+    ・ダウンロード
+    ・領域のデータ構造
+    ・領域に沿ってランダムに分布を作る部分
+
+    座標系
+    ・width軸: x: p[0]
+    ・height軸: y: p[1]
+     */
+
+
+    /*
+    グローバル変数の定義
+    */
+    const MODES = {
+        UNIFORM: 'unif',
+        NORMAL: 'norm'
+    }
+    let context = {
+        points: [],
+        figures: [],
+        samples: [],
+        dp: undefined,
+        sample_mode: MODES.NORMAL
+    }
+    const canvas = document.getElementById('canvas')
+    const canvas_bg = document.getElementById('background')
+    //canvas.width = document.body.clientWidth;
+    //canvas.height = document.body.clientHeight;
+    // canvas.width = window.innerWidth;
+    // canvas.height = window.innerHeight;
+    const width = 400;
+    const height = 400;
+    canvas.width = canvas_bg.width = width;
+    canvas.height = canvas_bg.height = height;
+    const ctx = canvas.getContext('2d')
+    const ctx_bg = canvas_bg.getContext('2d')
+    // 描画処理関係
+    let drawing = false
+    let mousePos = {x: 0, y: 0}
+    let lastPos = {x: 0, y: 0}
+
+    function clearAll () {
+        context.points = []
+        context.figures = []
+        context.samples = []
+        ctx.clearRect(0, 0, width, height)
+        ctx_bg.clearRect(0, 0, width, height)
+    }
+
+    function handleDownload () {
+        /**
+         * csvのダウンロード処理
+         * samplesに入っている、ランダムサンプルされた点座標たちをcsvの形で保存
+         * @global points
+         */
+        // CSV化
+        var csvText = context.samples.map(function (x) { return x.join(', ') }).join('\n')
+        var blob = new Blob([csvText], {'type': 'text/plain'});
+        if (window.navigator.msSaveBlob) {
+        } else {
+            document.getElementById("download").href = window.URL.createObjectURL(blob)
+            document.getElementById("download").click()
+        }
+    }
+
+    /*
+     コアアルゴリズム
+      */
+    function distance(ctx, data) {
+        const w = data.width, h = data.height
+        const dp = Array(w * h)
+        dp.fill(-1)
+        const dx = [0, 0, 1, -1], dy = [1, -1, 0, 0];
+
+        // 準備 in.dataで何も書いていないところは当然0
+        for (let i = 0; i < w * h; i += 1) {
+            if (data.data[4 * i + 3] === 0) {
+                // 0に初期化
+                dp[i] = 0
+            } else {
+                // 決まらないので、未定のフラグを立てておく
+                dp[i] = -1
+            }
+        }
+        let t = 0
+        while (true) {
+            console.log('morph', t)
+            // dp = tで確定しているマスを探す
+            var index = []
+            for (let i = 0; i < w * h; i += 1) {
+                if (dp[i] === t) {
+                    index.push(i)
+                }
+            }
+            // 終了条件
+            if (index.length === 0) break;
+
+            // 更新する
+            for (let s = 0, len = index.length; s < len; s += 1) {
+                // 周囲のマスをみて、確定しているところは埋める
+                for (let l = 0; l < 4; l += 1) {
+                    const sx = (index[s] % w) + dx[l]
+                    const sy = ((index[s] / w) | 0) + dy[l]
+                    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+                        const pos = (sx + sy * w)
+                        // 決まっていない近傍は、t+1に確定して良い。
+                        if (dp[pos] === -1) dp[pos] = t + 1;
+                    }
+                }
+            }
+            t += 1
+
+            // 例外
+            if (t >= 1000) {
+                break
+            }
+        }
+        return dp
+    }
+    function createImageDataFromArray(array, w, h) {
+        const out = ctx.createImageData(w, h)
+        const d = out.data
+        for (let i = 0; i < w * h; i += 1) {
+            if (array[i] === 0) {
+                d[4*i] = 0
+                d[4*i + 1] = 0
+                d[4*i + 2] = 0
+                d[4*i + 3] = 255
+            } else if (array[i] === -1) {
+                d[4*i] = 0
+                d[4*i + 1] = 255
+                d[4*i + 2] = 0
+                d[4*i + 3] = 255
+            } else if (array[i] === 10) {
+                d[4*i] = 0
+                d[4*i + 1] = 0
+                d[4*i + 2] = 255
+                d[4*i + 3] = 255
+            } else if (array[i] === 20) {
+                d[4 * i] = 0
+                d[4 * i + 1] = 0
+                d[4 * i + 2] = 255
+                d[4 * i + 3] = 255
+            } else if (array[i] > 0.1 && array[i] < 0.2) {
+                d[4 * i] = 255
+                d[4 * i + 1] = 255
+                d[4 * i + 2] = 0
+                d[4 * i + 3] = 255
+            } else {
+                d[4*i] = 255
+                d[4*i + 1] = 255
+                d[4*i + 2] = 255
+                d[4*i + 3] = 255
+            }
+        }
+        return out
+    }
+
+    function hoge() {
+        const hoge = ctx.getImageData(0, 0, width, height)
+        /*
+        hoge2 = erode(ctx, hoge)
+        hoge2 = erode(ctx, hoge2)
+        hoge2 = erode(ctx, hoge2)
+        hoge2 = diff(ctx, hoge, hoge2)
+        // ctx.globalCompositeOperation = 'source-out'
+        */
+        // 距離を取ってくる処理をする
+        // const hoge2 = distance(ctx, hoge)
+        context.dp = distance(ctx, hoge)
+        const p = generateProbability(context.dp)
+        // const hoge2 = createImageDataFromArray(context.dp, width, height)
+        const hoge2 = createImageDataFromArray(p, width, height)
+        ctx.putImageData(hoge2, 0, 0)
+        console.log('hoge.finished')
+    }
+
+    function where (array) {
+        var indices = []
+        for (var i = 0; i < array.length; i++) {
+            if (array[i] > 0) {
+                indices.push(i)
+            }
+        }
+        return indices
+    }
+
+    function onChangeMode(x) {
+        console.log('change to ', x.id)
+        context.sample_mode = x.id
+    }
+
+    function generateRandomPointsAlongRegion (array, N) {
+        /**
+         * ランダムサンプルする
+         * @param 入力となる (w,h)の二次元array 各ピクセルに色が入ってるかどうかを格納
+         */
+        var ps = []
+        for (var i=0; i < N; i++) {
+            if (where(array).length < 1000) {
+                console.log('dont have enough regions')
+                break
+            }
+            while (true) {
+                // 1.x座標の取得
+                var tx = Math.floor(Math.random() * width)
+                var ty = Math.floor(Math.random() * height)
+                // 2.y座標の取得
+                var id = tx + ty * width
+                if (array[id*4] > 0 || array[id*4 + 1] > 0 || array[id*4 + 2] > 0) {
+                    break
+                }
+            }
+            ps.push([tx, ty])
+        }
+        return ps
+    }
+
+    // ガウス分布の確率密度関数 確率値を返す
+    function norm (x) {
+        return Math.exp(- (x * x) / 2) / Math.sqrt(2 * Math.PI)
+    }
+
+    function generateProbability (dp) {
+        // 最大のインデックスを取ってくる
+        // console.log(dp)
+        // console.log(dp.sort()[dp.length - 1])
+        // const M = Math.max.apply({}, dp);
+        // const M = Math.max(...dp)
+        let M = 0
+        dp.forEach(function (x) {
+            if (x > M) M = x
+        })
+        // 高いところから順番に正規分布で分布させたときの確率を返す
+        const out = Array(dp.length)
+        for (let i = 0; i < dp.length; i += 1) {
+            if (dp[i] > 0) {
+                out[i] = norm((M - dp[i]) * 2 / M)
+            } else {
+                out[i] = 0
+            }
+        }
+        return out
+    }
+
+    function generateRandomPointsAlongRegionNormal (prob, N) {
+        /**
+         * ランダムサンプルする
+         * 今度はエイリアス法でやる。
+         * prob = [0.5, 0.2, 0.1, 0.1, 0.1] みたいな感じ
+         * それぞれをランダムサンプルしたindexの集合を返す
+         */
+        /*
+        // 準備 O(n)
+        const S = []
+        const G = []
+        const K = prob.length
+        const v = Array(K)
+        const a = Array(K) // エイリアス
+        for (let i = 0; i < K; i += 1) {
+            v[i] = K * prob[i]
+            if (v[i] < 1) S.push(i)
+            else G.push(i)
+        }
+        while (S.length > 0) {
+            const k = S.pop()
+            const l = G.pop()
+            console.log(S, G, k, l)
+            a[k] = l
+            v[l] = v[l] - (1 - v[k])
+            if (v[k] < 1) {
+                S.push(l)
+            } else {
+                G.push(l)
+            }
+        }
+
+        // サンプル O(1) * N
+        const samples = []
+        for (let i = 0; i < N; i += 1) {
+            const k = Math.floor(Math.random() * K)
+            const r = Math.random()
+            if (r <= v[k]) {
+                samples.push(k)
+            } else {
+                samples.push(a[k])
+            }
+        }
+        */
+        const samples = []
+        return samples
+    }
+
+    // console.log('test', generateRandomPointsAlongRegionNormal([0.5, 0.2, 0.1, 0.1, 0.1], 10))
+
+    function draw() {
+        // 指定されたpoint群からいい感じに選んできて、プロットするやつ
+        const imageData = ctx.getImageData(0, 0, width, height)
+        if (context.sample_mode === 'unif') {
+            console.log('unif')
+            const N = 1000
+            context.samples = generateRandomPointsAlongRegion(imageData.data, N)
+        } else if (context.sample_mode === 'norm') {
+            console.log('norm')
+            context.dp = distance(ctx, imageData)
+            const probs = generateProbability(context.dp)
+
+            // ナイーブ実装
+            const N = 1000
+            const samples = []
+            while (samples.length < N) {
+                const x = Math.floor(Math.random() * width)
+                const y = Math.floor(Math.random() * height)
+                const r = Math.random()
+                if (probs[x + y * width] > r) samples.push([x, y])
+            }
+
+            // ちょっと早め
+            // const samples = generateRandomPointsAlongRegionNormal(probs, 1000)
+            context.samples = samples
+        }
+        // リフレッシュ
+        ctx_bg.clearRect(0, 0, width, height)
+        // ランダムな点たちを描画する
+        ctx_bg.fillStyle = "#ff0000"
+        context.samples.forEach(function (point) {
+            ctx_bg.fillRect(point[0], point[1], 2, 2)
+        })
+    }
+
+    function selectRegion() {
+        /**
+         * イラレ的な選択機能をつける
+         */
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#0000FF'
+        var a = 20, b = 20, c = 140, d = 140
+        ctx.strokeRect(a, b, c-a, d-b)
+        ctx.strokeRect(a-1, b-1, 2, 2)
+        ctx.strokeRect(a-1, d-1, 2, 2)
+        ctx.strokeRect(c-1, b-1, 2, 2)
+        ctx.strokeRect(c-1, d-1, 2, 2)
+    }
+
+    function getLayer() {
+        if (document.getElementsByName("choice")[0].checked) {
+            return 1
+        } else if (document.getElementsByName("choice")[1].checked) {
+            return 2
+        } else {
+            return 0
+        }
+    }
+
+
+
+    function render() {
+        // キャンバスのレンダリング
+        if (drawing) {
+            ctx.beginPath()
+            ctx.moveTo(lastPos.x, lastPos.y)
+            ctx.lineTo(mousePos.x, mousePos.y)
+            ctx.lineCap = "round"
+            ctx.stroke()
+            ctx.closePath()
+            lastPos = mousePos
+        }
+    }
+
+    // fpsごとに実行されるやつ
+    function drawLoop() {
+        requestAnimationFrame(drawLoop)
+        render()
+    };
+    drawLoop();
+
+
+    // マウス用
+    canvas.addEventListener('mousedown', function (e) {
+        drawing = true
+        lastPos = getMousePos(e)
+    })
+    canvas.addEventListener('mouseup', function (e) {
+        drawing = false
+        draw()
+    })
+    canvas.addEventListener('mouseout', function (e) {
+        drawing = false
+    })
+
+    function getMousePos (mouseEvent) {
+        var rect = mouseEvent.target.getBoundingClientRect()
+        x = mouseEvent.clientX - rect.left
+        y = mouseEvent.clientY - rect.top
+        return { x: x, y: y }
+    }
+
+    canvas.addEventListener('mousemove', function (e) {
+        ctx.lineWidth = parseInt(document.getElementById('output1').value);
+        ctx.strokeStyle = 'rgba(0, 0, 255, 1.0)'
+        mousePos = getMousePos(e)
+    })
+
+    // タッチ用
+    // 下を大いに参考にした。
+    // http://bencentra.com/code/2014/12/05/html5-canvas-touch-events.html
+
+
+    // UI関係
+    const radio = document.getElementsByName('mode')
+</script>
+
+
