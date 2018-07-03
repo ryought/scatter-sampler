@@ -71,4 +71,5 @@ def testC():
 
     plt.imshow(img), plt.show()
 
-testC()
+testB()
+# testC()
