@@ -89,11 +89,11 @@
                    oninput="document.getElementById('output2').value=this.value; draw();">
         </div>
 
-        <!-- <label class="mdl-switch mdl-js-switch mdl-js-ripple-effect" for="switch-1"> -->
-        <!--     <input type="checkbox" id="switch-1" class="mdl-switch__input" -->
-        <!--            onChange="onChangeMode(this)"> -->
-        <!--     <span class="mdl-switch__label">Uniform Distribution Mode</span> -->
-        <!-- </label> -->
+        <label class="mdl-switch mdl-js-switch mdl-js-ripple-effect" for="switch-1">
+            <input type="checkbox" id="switch-1" class="mdl-switch__input"
+                   onChange="onChangeMode(this)">
+            <span class="mdl-switch__label">Uniform Distribution Mode</span>
+        </label>
 
     </div>
 </div>
@@ -119,8 +119,10 @@
 
     処理のTODO
     ・領域のデータ構造
+    ・領域を選んで移動する、サイズを変更する
     ・UNDOの機能
     ・レイヤー化
+    ・クラスターわけ
 
     座標系
     ・width軸: x: p[0]
@@ -343,19 +345,29 @@
          * ランダムサンプルする
          * @param 入力となる (w,h)の二次元array 各ピクセルに色が入ってるかどうかを格納
          */
-        var ps = []
-        if (where(array).length < 1000) {
+        const candidates = where(array)
+        if (candidates.length < 1000) {
             console.log('dont have enough regions')
-            return ps
+            return []
         }
-        /*
+        const mat = Array(array.length / 4)
+        for (let i = 0; i < mat.length; i += 1) {
+            if (array[i*4 + 3] === 0) {
+                mat[i] = 0
+            } else {
+                mat[i] = 1
+            }
+        }
+        const ps = []
+        const indexes = where(mat)
+        const len = indexes.length
         while (ps.length < N) {
-            const x =
-            const y =
-
+            const id = Math.floor(Math.random() * len)
+            const x = indexes[id] % width
+            const y = (indexes[id] / width) | 0
             ps.push([x, y])
         }
-
+        /*
                 // 1.x座標の取得
                 var tx = Math.floor(Math.random() * width)
                 var ty = Math.floor(Math.random() * height)
@@ -364,8 +376,7 @@
                 if (array[id*4] > 0 || array[id*4 + 1] > 0 || array[id*4 + 2] > 0) {
                     break
                 }
-        }
-        */
+                */
         return ps
     }
 
@@ -402,6 +413,7 @@
          * 今度はエイリアス法でやる。
          * prob = [0.5, 0.2, 0.1, 0.1, 0.1] みたいな感じ
          * それぞれをランダムサンプルしたindexの集合を返す
+         * TODO
          */
         /*
         // 準備 O(n)
